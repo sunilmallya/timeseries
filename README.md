@@ -1,5 +1,3 @@
-![Alt text]()
-
 # Machine Learning with TimeSeries and Sequence Data - AMLD 2018
 
 This repo contains materials for the "Modeling timeseries and sequence data on AWS using Apache
