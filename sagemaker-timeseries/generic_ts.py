@@ -1,3 +1,7 @@
+'''
+TimeSeries Classificataion SageMaker Template 
+'''
+
 from __future__ import print_function
 
 import logging
@@ -8,6 +12,8 @@ import numpy as np
 import json
 import time
 import math
+import pickle
+
 logging.basicConfig(level=logging.DEBUG)
 
 import os
@@ -15,40 +21,6 @@ def find_file(root_path, file_name):
     for root, dirs, files in os.walk(root_path):
         if file_name in files:
             return os.path.join(root, file_name)
-
-import csv
-def get_labels_from_csv(path):
-    values = []
-    with open(path, 'rb') as csvfile:
-        rd = csv.reader(csvfile, delimiter=',')
-        for row in rd:
-            values.append(float(row[0]))
-    return np.array(values).astype('float32')
-
-
-INPUT_SIGNAL_TYPES = [
-    "body_acc_x_",
-    "body_acc_y_",
-    "body_acc_z_",
-    "body_gyro_x_",
-    "body_gyro_y_",
-    "body_gyro_z_",
-    "total_acc_x_",
-    "total_acc_y_",
-    "total_acc_z_"
-]
-
-LABELS = [
-    "WALKING", 
-    "WALKING_UPSTAIRS", 
-    "WALKING_DOWNSTAIRS", 
-    "SITTING", 
-    "STANDING", 
-    "LAYING"
-]
-
-## Base Class
-
 
 def detach(hidden):
     if isinstance(hidden, (tuple, list)):
@@ -86,6 +58,7 @@ class BaseRNNClassifier(mx.gluon.Block):
     def __init__(self, ctx):
         super(BaseRNNClassifier, self).__init__()
         self.ctx = ctx
+        self.batch_size = 128
 
     def build_model(self, n_out, rnn_size=128, n_layer=1):
         self.rnn_size = rnn_size
@@ -102,6 +75,16 @@ class BaseRNNClassifier(mx.gluon.Block):
         out = out[:, out.shape[1]-1, :]
         out = self.output(out)
         return out, hidden
+    
+    def save(self, model_dir):
+        # save the model
+        init_state = mx.nd.zeros((self.n_layer, self.batch_size, self.rnn_size), self.ctx)
+        hidden = [init_state] * 2
+
+        #TODO(Sunil): Update when HybridSequential/hybridize is available for RNN/LSTM
+        #y = self.forward(mx.sym.var('data'), hidden)
+        #y.save('%s/model.json' % model_dir)
+        self.collect_params().save('%s/model.params' % model_dir)
 
     def compile_model(self, loss=None, lr=3E-3):
         self.collect_params().initialize(mx.init.Xavier(), ctx=self.ctx)
@@ -112,6 +95,7 @@ class BaseRNNClassifier(mx.gluon.Block):
                                           {'learning_rate': self.lr})
 
     def top_k_acc(self, data_iterator, iter_type='mxiter', top_k=3, batch_size=128):
+        self.batch_size = batch_size
         batch_pred_list = []
         true_labels = []
         init_state = mx.nd.zeros((self.n_layer, batch_size, self.rnn_size), self.ctx)
@@ -161,6 +145,7 @@ class BaseRNNClassifier(mx.gluon.Block):
         @train_data:  can be of type list of Numpy array, DataLoader, MXNet NDArray Iter
         '''
         
+        self.batch_size = batch_size
         moving_loss = 0.
         total_batches = 0
 
@@ -272,52 +257,48 @@ def train(channel_input_dirs, hyperparameters, **kwargs):
     learning_rate = hyperparameters.get('learning_rate', 0.1)
     momentum = hyperparameters.get('momentum', 0.9)
     log_interval = hyperparameters.get('log_interval', 100)
+    num_gpus = hyperparameters.get('num_gpus', 0)
+    
+    # Parametrize the network definition
+    n_out = hyperparameters.get('n_out', 2)
+    rnn_size = hyperparameters.get('rnn_size', 64)
+    n_layer = hyperparameters.get('n_layer', 1)
 
-    # load training and validation data
-    # TODO(use find file)
-    path = '/opt/ml/input/data/training'
+    X_train, y_train = load_data('train')
+    X_test, y_test = load_data('test')
 
-    #https://s3-us-west-2.amazonaws.com/sagemaker-us-west-2-209028685534/data/har/test/body_acc_x_test.txt
-    train = [path + "/train/%strain.txt" % signal for signal in INPUT_SIGNAL_TYPES]
-    test = [path + "/test/%stest.txt" % signal for signal in INPUT_SIGNAL_TYPES]
-
-    X_train = load_data(train)
-    X_test = load_data(test)
-
-    y_train_path = path + "/train/y_train.txt"
-
-    #df = pd.read_csv(y_train_path, names=["labels"])
-    #y_train = np.asarray(df.to_dict()['labels'].values()).astype('float32')
-    y_train = get_labels_from_csv(y_train_path)
-
-    y_test_path = path + "/test/y_test.txt"
-    #df = pd.read_csv(y_test_path, names=["labels"])
-    #y_test = np.asarray(df.to_dict()['labels'].values()).astype('float32')
-    y_test = get_labels_from_csv(y_test_path)
-
-    # define the network
+    # context 
     ctx = mx.cpu()
+    if num_gpus >1:
+        ctx = [mx.gpu(i) for i in range(num_gpus)]
+    
+    print (ctx)
     model = BaseRNNClassifier(ctx)
-    model.build_model(n_out=len(LABELS), rnn_size=64, n_layer=1)
+    model.build_model(n_out=n_out, rnn_size=rnn_size, n_layer=n_layer)
     model.compile_model()
     train_loss, train_acc, test_acc = model.fit([X_train, y_train], [X_test, y_test], batch_size=batch_size, epochs=epochs)
-
     return model
 
 def save(net, model_dir):
+    print ("saving the model")
+    net.save(model_dir)
+    
     # save the model
-    y = net(mx.sym.var('data'))
-    y.save('%s/model.json' % model_dir)
-    net.collect_params().save('%s/model.params' % model_dir)
+    #y = net(mx.sym.var('data'))
+    #net.save('%s/model.json' % model_dir)
+    #net.collect_params().save('%s/model.params' % model_dir)
 
 ## Load Train and Test Data
-def load_data(files):
-    arr = []
-    for fname in files:
-        with open(fname, 'r') as f:
-            rows = [row.replace('  ', ' ').strip().split(' ') for row in f]
-            arr.append([np.array(ele, dtype=np.float32) for ele in rows])
-    return np.transpose(np.array(arr), (1, 2, 0))
+def load_data(typ):
+    path = "."
+    if typ == "train":
+        #Load Train Data
+        f = find_file(path, "train.pkl")
+    else:#Load Test Data
+        f = find_file(path, "test.pkl")
+    X_t, y_t = pickle.load(open(f, "rb"))
+    return X_t, y_t
+
 
 # ------------------------------------------------------------ #
 # Hosting methods                                              #
