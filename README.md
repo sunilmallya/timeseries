@@ -7,9 +7,14 @@ forecasting future timeseries, anomaly detection to name a few. We will use Apac
 deep learning framework to train our neural networks. Once trained we will explore various scalable
 deployment options on AWS for both real-time and batch inference.
 
+## Slide
+refer to slides for an introduction in to [time series modeling on
+AWS](https://www.slideshare.net/mallyajiggs/time-series-modeling-workd-amld-2018-lausanne) 
+
 ## Agenda
 
-1. [Introduction to ApacheMXNet and Gluon - Crash Course](intro_mxnet_gluon)
+0. [Introduction to ApacheMXNet and Gluon - Crash Course](intro_mxnet_gluon)
+1. [Introduction to TimeSeries Analysis](intro_to_timeseries.ipynb)
 2. [Univariate TimeSeries](univariate_timeseries_forecasting_lstm.ipynb)
 3. [Multivariate TimeSeries Forecasting](multivariate_timeseries_forecasting.ipynb)
 4. [TimeSeries Forecasting with DeepAR](sagemaker-timeseries)
@@ -17,7 +22,11 @@ deployment options on AWS for both real-time and batch inference.
 
 ## Prerequisites
 
-- Setup on AWS account 
+- Setup an [AWS account](https://docs.aws.amazon.com/sagemaker/latest/dg/gs-account.html)
+- Option 1: Run on [Amazon
+  SageMaker](https://docs.aws.amazon.com/sagemaker/latest/dg/gs-setup-working-env.html)
+- Option 2: Setup a notebook server on [AWS DL
+  AMI](https://s3.amazonaws.com/smallya-test/strata-london/NotebookSetupAWS.html)
 
 ## Apache MXNet cheat sheet and Gluon  
 
