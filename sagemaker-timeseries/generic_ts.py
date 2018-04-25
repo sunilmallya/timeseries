@@ -266,11 +266,15 @@ def train(channel_input_dirs, hyperparameters, **kwargs):
 
     X_train, y_train = load_data('train')
     X_test, y_test = load_data('test')
+    
+    y_train = y_train - 1
+    y_test = y_test - 1
 
     # context 
     ctx = mx.cpu()
-    if num_gpus >1:
-        ctx = [mx.gpu(i) for i in range(num_gpus)]
+    if num_gpus >= 1:
+        ctx = mx.gpu()
+        #ctx = [mx.gpu(i) for i in range(num_gpus)]
     
     print (ctx)
     model = BaseRNNClassifier(ctx)
