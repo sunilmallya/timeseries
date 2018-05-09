@@ -10,8 +10,8 @@ from mxnet import gluon, autograd, nd
 from mxnet.gluon import nn
 import numpy as np
 import json
-import time
-import math
+#import time
+#import math
 import pickle
 
 logging.basicConfig(level=logging.DEBUG)
@@ -267,8 +267,8 @@ def train(channel_input_dirs, hyperparameters, **kwargs):
     X_train, y_train = load_data('train')
     X_test, y_test = load_data('test')
     
-    y_train = y_train - 1
-    y_test = y_test - 1
+    #y_train = y_train - 1
+    #y_test = y_test - 1
 
     # context 
     ctx = mx.cpu()
