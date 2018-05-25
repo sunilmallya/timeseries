@@ -10,8 +10,6 @@ from mxnet import gluon, autograd, nd
 from mxnet.gluon import nn
 import numpy as np
 import json
-import time
-import math
 import pickle
 
 logging.basicConfig(level=logging.DEBUG)
@@ -60,32 +58,24 @@ class BaseRNNClassifier(mx.gluon.Block):
         self.ctx = ctx
         self.batch_size = 128
 
-    def build_model(self, n_out, rnn_size=128, n_layer=1):
+    def build_model(self, n_out, rnn_size=128, n_layer=1, model_dir = False):
         self.rnn_size = rnn_size
         self.n_layer = n_layer
         self.n_out = n_out
-        
-        # LSTM default; #TODO(Sunil): make this generic
-        self.lstm = mx.gluon.rnn.LSTM(self.rnn_size, self.n_layer, layout='NTC')
-        #self.lstm = mx.gluon.rnn.GRU(self.rnn_size, self.n_layer)
-        self.output = mx.gluon.nn.Dense(self.n_out)
+        self.model_dir = model_dir # This is for Amazon SageMaker
+        with self.name_scope():
+            self.lstm = mx.gluon.rnn.LSTM(self.rnn_size, self.n_layer, layout='NTC')
+            self.output = mx.gluon.nn.Dense(self.n_out)
 
-    def forward(self, x, hidden):
+    def forward(self, x, hidden = False):
+        if not hidden:
+            init_state = mx.nd.zeros((self.n_layer, len(x), self.rnn_size), self.ctx)
+            hidden = [init_state] * 2
         out, hidden = self.lstm(x, hidden)
         out = out[:, out.shape[1]-1, :]
         out = self.output(out)
         return out, hidden
     
-    def save(self, model_dir):
-        # save the model
-        init_state = mx.nd.zeros((self.n_layer, self.batch_size, self.rnn_size), self.ctx)
-        hidden = [init_state] * 2
-
-        #TODO(Sunil): Update when HybridSequential/hybridize is available for RNN/LSTM
-        #y = self.forward(mx.sym.var('data'), hidden)
-        #y.save('%s/model.json' % model_dir)
-        self.collect_params().save('%s/model.params' % model_dir)
-
     def compile_model(self, loss=None, lr=3E-3):
         self.collect_params().initialize(mx.init.Xavier(), ctx=self.ctx)
         self.criterion = mx.gluon.loss.SoftmaxCrossEntropyLoss()
@@ -120,13 +110,7 @@ class BaseRNNClassifier(mx.gluon.Block):
             # Lets do a forward pass only!
             output, hidden = self.forward(data, hidden)
             preds = mx.nd.argmax(output, axis=1)
-            met.update(labels=label, preds=preds)
-                
-        #if self.all_labels is None:
-        #    self.all_labels = BaseRNNClassifier.get_all_labels(data_iterator, iter_type)
-        #preds = self.predict(data_iterator, iter_type=iter_type, batch_size=batch_size)
-        #met.update(labels=mx.nd.array(self.all_labels[:len(preds)]), preds=preds)
-        
+            met.update(labels=label, preds=preds)                
         return met.get()                   
                     
     def predict(self, data_iterator, iter_type='mxiter', batch_size=128):
@@ -137,7 +121,6 @@ class BaseRNNClassifier(mx.gluon.Block):
             data, label = BaseRNNClassifier.get_data(batch, iter_type, self.ctx)
             output, hidden = self.forward(data, hidden)
             batch_pred_list.append(output.asnumpy())
-        #return np.vstack(batch_pred_list)
         return np.argmax(np.vstack(batch_pred_list), 1)
     
     def fit(self, train_data, test_data, epochs, batch_size, verbose=True):
@@ -182,12 +165,9 @@ class BaseRNNClassifier(mx.gluon.Block):
             total_batches = len(train_iter)
         else:
             raise ValueError("pass mxnet ndarray or numpy array as [data, label]")
-
-        #print "Data type:", type(train_data), type(test_data), iter_type
-        #print "Sizes", self.n_layer, batch_size, self.rnn_size, self.ctx
         
+        best_acc = 0.0
         for e in range(epochs):
-            #print self.lstm.collect_params()
 
             # reset iterators if of MXNet Itertype
             if iter_type == "mxiter":
@@ -196,16 +176,12 @@ class BaseRNNClassifier(mx.gluon.Block):
         
             init_state = mx.nd.zeros((self.n_layer, batch_size, self.rnn_size), self.ctx)
             hidden = [init_state] * 2                
-            #hidden = self.begin_state(func=mx.nd.zeros, batch_size=batch_size, ctx=self.ctx)
             yhat = []
             for i, batch in enumerate(train_iter):
                 data, label = BaseRNNClassifier.get_data(batch, iter_type, self.ctx)
-                #print "Data Shapes:", data.shape, label.shape
                 hidden = detach(hidden)
-                #with mx.gluon.autograd.record(train_mode=True):
                 with autograd.record():
                     preds, hidden = self.forward(data, hidden)
-                    #print preds[0].shape, hidden[0].shape, label.shape
                     loss = self.loss(preds, label) 
                     yhat.extend(preds)
                 loss.backward()                                        
@@ -232,6 +208,10 @@ class BaseRNNClassifier(mx.gluon.Block):
             test_acc.append(tst_acc[1])
 
             print("Epoch %s. Loss: %.5f Train Acc: %s Test Acc: %s" % (e, moving_loss, t_acc, tst_acc))
+            if best_acc < tst_acc and self.model_dir:
+                print("=-=-=-=-=-=-=Model Saved=-=-=-=-=-=-=")
+                best_acc = tst_acc
+                self.save_params('{}/model_best.params'.format(self.model_dir))
         return train_loss, train_acc, test_acc
                     
     def predict(self, data_iterator, iter_type='mxiter', batch_size=128):
@@ -249,56 +229,54 @@ class BaseRNNClassifier(mx.gluon.Block):
 # Training methods                                             #
 # ------------------------------------------------------------ #
 
-def train(channel_input_dirs, hyperparameters, **kwargs):
+def train(channel_input_dirs, model_dir, hyperparameters, **kwargs):
 
     # retrieve the hyperparameters we set in notebook (with some defaults)
     batch_size = hyperparameters.get('batch_size', 100)
     epochs = hyperparameters.get('epochs', 10)
-    learning_rate = hyperparameters.get('learning_rate', 0.1)
-    momentum = hyperparameters.get('momentum', 0.9)
-    log_interval = hyperparameters.get('log_interval', 100)
     num_gpus = hyperparameters.get('num_gpus', 0)
     
     # Parametrize the network definition
     n_out = hyperparameters.get('n_out', 2)
     rnn_size = hyperparameters.get('rnn_size', 64)
     n_layer = hyperparameters.get('n_layer', 1)
-
-    X_train, y_train = load_data('train')
-    X_test, y_test = load_data('test')
-
+    
+    path = channel_input_dirs['training']
+    X_train, y_train = load_data(path, 'train')
+    X_test, y_test = load_data(path, 'test')
+    
     # context 
     ctx = mx.cpu()
-    if num_gpus >1:
-        ctx = [mx.gpu(i) for i in range(num_gpus)]
+    if num_gpus >= 1:
+        ctx = mx.gpu()
     
-    print (ctx)
     model = BaseRNNClassifier(ctx)
-    model.build_model(n_out=n_out, rnn_size=rnn_size, n_layer=n_layer)
+    model.build_model(n_out=n_out, rnn_size=rnn_size, n_layer=n_layer, model_dir = model_dir)
     model.compile_model()
     train_loss, train_acc, test_acc = model.fit([X_train, y_train], [X_test, y_test], batch_size=batch_size, epochs=epochs)
     return model
 
 def save(net, model_dir):
-    print ("saving the model")
-    net.save(model_dir)
-    
-    # save the model
-    #y = net(mx.sym.var('data'))
-    #net.save('%s/model.json' % model_dir)
-    #net.collect_params().save('%s/model.params' % model_dir)
+    net.save_params('{}/model_last.params'.format(model_dir))
+    '''
+    These parameters need to be saved.
+    '''
+    f = open('{}/model.json'.format(model_dir), 'w')
+    json.dump({'rnn_size': net.rnn_size,
+               'n_layer': net.n_layer,
+               'n_out': net.n_out},
+              f)
+    f.close()
 
 ## Load Train and Test Data
-def load_data(typ):
-    path = "."
+def load_data(path, typ):
     if typ == "train":
         #Load Train Data
-        f = find_file(path, "train.pkl")
+        f = find_file(path + '/train', "train.pkl")
     else:#Load Test Data
-        f = find_file(path, "test.pkl")
+        f = find_file(path + '/test', "test.pkl")
     X_t, y_t = pickle.load(open(f, "rb"))
     return X_t, y_t
-
 
 # ------------------------------------------------------------ #
 # Hosting methods                                              #
@@ -311,18 +289,23 @@ def model_fn(model_dir):
     :param: model_dir The directory where model files are stored.
     :return: a model (in this case a Gluon network)
     """
-    symbol = mx.sym.load('%s/model.json' % model_dir)
-    outputs = mx.symbol.softmax(data=symbol, name='softmax_label')
-    inputs = mx.sym.var('data')
-    param_dict = gluon.ParameterDict('model_')
-    net = gluon.SymbolBlock(outputs, inputs, param_dict)
-    net.load_params('%s/model.params' % model_dir, ctx=mx.cpu())
-    return net
-
+    ctx = mx.cpu()
+    f = open('{}/model.json'.format(model_dir), 'r')
+    block_params = json.load(f)
+    f.close()
+    model = BaseRNNClassifier(ctx)
+    model.build_model(n_out=block_params['n_out'], 
+                      rnn_size=block_params['rnn_size'], 
+                      n_layer=block_params['n_layer'])
+    model.compile_model()
+    model.load_params('{}/model_best.params'.format(model_dir), ctx)
+    
+    return model
+    
 
 def transform_fn(net, data, input_content_type, output_content_type):
     """
-    Transform a request using the Gluon model. Called once per request.
+    Transform a request using the Gluon model. Called once per request.#
 
     :param net: The Gluon model.
     :param data: The request payload.
@@ -332,9 +315,14 @@ def transform_fn(net, data, input_content_type, output_content_type):
     """
     # we can use content types to vary input/output handling, but
     # here we just assume json for both
-    parsed = json.loads(data)
-    nda = mx.nd.array(parsed)
-    output = net(nda)
+    # data: <type 'unicode'>
+    
+    parsed = json.loads(data) #<type 'list'>
+
+    nda = mx.nd.array(np.array(parsed), ctx = mx.cpu())
+
+    output, _ = net(nda) # calling model.forward()
     prediction = mx.nd.argmax(output, axis=1)
-    response_body = json.dumps(prediction.asnumpy().tolist()[0])
+    
+    response_body = json.dumps(prediction.asnumpy().tolist())
     return response_body, output_content_type
